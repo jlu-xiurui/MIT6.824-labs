@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,10 +27,56 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
+
+// try to do the map task, return the result of map task : false / task id
+func DoMapTask(mapf func(string, string) []KeyValue) int {
+	// call RPC to get content for Map
+	path, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Getwd failed!\n")
+		return -1
+	}
+	args := AskMapArgs{Machine{path}}
+	reply := AskMapReply{}
+	ok := call("Coordinator.AskMapTask", &args, &reply)
+	if ok {
+		fmt.Printf("Call AskMapTask failed!\n")
+		return -1
+	}
+	// All Map task is busy or over
+	if reply.TaskId == 0 {
+		return 0
+	}
+	// Do the user Map
+	taskId := reply.TaskId
+	nReduce := reply.nReduce
+	kva := mapf(reply.Filename, string(reply.Content))
+	intermediate := make([][]KeyValue, nReduce)
+	for _, kv := range kva {
+		i := ihash(kv.Key) % nReduce
+		intermediate[i] = append(intermediate[i], kv)
+	}
+	for i := 0; i < nReduce; i++ {
+		filename := fmt.Sprintf("mr-%d%d", taskId, i)
+		file, _ := os.Create(filename)
+		enc := json.NewEncoder(file)
+		for _, kv := range intermediate[i] {
+			err := enc.Encode(&kv)
+			if err != nil {
+				fmt.Printf("Encode failed!\n")
+				return -1
+			}
+		}
+		file.Close()
+	}
+	return taskId
+}
+
+func DoMapTask(reduce func(string, string)) int {
+}
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -35,6 +84,21 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+	for {
+		// try DoMapTask, if OK orr cause err, then continue and try another map task
+		if ret := DoMapTask(mapf); ret > 0 {
+			args := MapOverArgs{ret}
+			reply := MapOverReply{}
+			for {
+				if ok := call("Coordinator.MapOver", &args, &reply); ok {
+					break
+				}
+			}
+		} else if ret < 0 {
+
+		}
+		// DoMapTask return 0, there is not IDLE map task, try DoReduceTask
+	}
 
 }
 
