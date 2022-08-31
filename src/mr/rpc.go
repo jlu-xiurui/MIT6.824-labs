@@ -52,14 +52,15 @@ type AskMapReply struct {
 	Content  string
 	Filename string
 	TaskId   int
-	nReduce  int
+	NReduce  int
+	Over     bool
 }
 
-type MapOverArgs struct {
+type TaskOverArgs struct {
 	TaskId int
 }
 
-type MapOverReply struct {
+type TaskOverReply struct {
 }
 
 type AskReduceArgs struct {
@@ -69,6 +70,7 @@ type AskReduceArgs struct {
 type AskReduceReply struct {
 	IntermediateMachine []Machine
 	TaskId              int
+	Over                bool
 }
 
 // Cook up a unique-ish UNIX-domain socket name

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 )
 
 //
@@ -32,27 +34,29 @@ func ihash(key string) int {
 //
 
 // try to do the map task, return the result of map task : false / task id
-func DoMapTask(mapf func(string, string) []KeyValue) int {
+func DoMapTask(mapf func(string, string) []KeyValue) (int, bool) {
 	// call RPC to get content for Map
 	path, err := os.Getwd()
 	if err != nil {
-		fmt.Printf("Getwd failed!\n")
-		return -1
+		//fmt.Printf("Getwd failed!\n")
+		return -1, false
 	}
 	args := AskMapArgs{Machine{path}}
 	reply := AskMapReply{}
 	ok := call("Coordinator.AskMapTask", &args, &reply)
-	if ok {
-		fmt.Printf("Call AskMapTask failed!\n")
-		return -1
+	if !ok {
+		//fmt.Printf("Call AskMapTask failed!\n")
+		return -1, false
 	}
 	// All Map task is busy or over
-	if reply.TaskId == 0 {
-		return 0
+	if reply.TaskId == -1 {
+		//fmt.Printf("All map task busy or over!\n")
+		return -1, reply.Over
 	}
 	// Do the user Map
 	taskId := reply.TaskId
-	nReduce := reply.nReduce
+	nReduce := reply.NReduce
+	//fmt.Printf("task %d content : %s,filename : %s", taskId, reply.Content, reply.Filename)
 	kva := mapf(reply.Filename, string(reply.Content))
 	intermediate := make([][]KeyValue, nReduce)
 	for _, kv := range kva {
@@ -66,16 +70,95 @@ func DoMapTask(mapf func(string, string) []KeyValue) int {
 		for _, kv := range intermediate[i] {
 			err := enc.Encode(&kv)
 			if err != nil {
-				fmt.Printf("Encode failed!\n")
-				return -1
+				//fmt.Printf("Encode failed!\n")
+				return -1, false
 			}
 		}
 		file.Close()
 	}
-	return taskId
+	return taskId, false
 }
 
-func DoMapTask(reduce func(string, string)) int {
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
+func DoReduceTask(reducef func(string, []string) string) (int, bool) {
+	// call RPC to get intermediate file for Reduce
+	path, err := os.Getwd()
+	if err != nil {
+		//fmt.Printf("Getwd failed!\n")
+		return -1, false
+	}
+	args := AskReduceArgs{Machine{path}}
+	reply := AskReduceReply{}
+	ok := call("Coordinator.AskReduceTask", &args, &reply)
+	if !ok {
+		//fmt.Printf("Call AskReduceTask failed!\n")
+		return -1, false
+	}
+	// All Reduce task is busy or over
+	if reply.TaskId == -1 {
+		//fmt.Printf("All reduce task busy or over!\n")
+		return -1, reply.Over
+	}
+	// read all intermediate file
+	intermediate := []KeyValue{}
+	intermediateMachines := reply.IntermediateMachine
+	taskId := reply.TaskId
+	for i, machine := range intermediateMachines {
+		filename := fmt.Sprintf("%s/mr-%d%d", machine.Path, i, taskId)
+		file, err := os.Open(filename)
+		if err != nil {
+			//fmt.Printf("Open %s failed!\n", filename)
+			return -1, false
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+	}
+	sort.Sort(ByKey(intermediate))
+
+	tmpfile, err := ioutil.TempFile(path, "tmp")
+	if err != nil {
+		//fmt.Printf("TempFile failed!\n")
+		return -1, false
+	}
+	// call Reduce on each distinct key in intermediate[],
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(tmpfile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+	newpath := fmt.Sprintf("%s/mr-out-%d", path, taskId)
+	err = os.Rename(tmpfile.Name(), newpath)
+	if err != nil {
+		//fmt.Printf("Rename failed!\n")
+		return -1, false
+	}
+	tmpfile.Close()
+	return taskId, false
 }
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -83,21 +166,44 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-	for {
-		// try DoMapTask, if OK orr cause err, then continue and try another map task
-		if ret := DoMapTask(mapf); ret > 0 {
-			args := MapOverArgs{ret}
-			reply := MapOverReply{}
+	// CallExample()'
+	mapOver := false
+	reduceOver := false
+	for !mapOver || !reduceOver {
+		// try DoMapTask, if OK or cause err, then continue and try another map task
+		if !mapOver {
+			if ret, over := DoMapTask(mapf); ret >= 0 {
+				args := TaskOverArgs{ret}
+				reply := TaskOverReply{}
+
+				for {
+					if ok := call("Coordinator.MapOver", &args, &reply); ok {
+						break
+					}
+				}
+				//fmt.Printf("map task %d finished\n", ret)
+			} else if over {
+				// DoMapTask return -1, there is a err, just try again, if return over == true,
+				// then all map tasks have finished
+				mapOver = true
+			}
+			continue
+		}
+		// try DoReduceTask
+		if ret, over := DoReduceTask(reducef); ret >= 0 {
+			args := TaskOverArgs{ret}
+			reply := TaskOverReply{}
 			for {
-				if ok := call("Coordinator.MapOver", &args, &reply); ok {
+				if ok := call("Coordinator.ReduceOver", &args, &reply); ok {
 					break
 				}
 			}
-		} else if ret < 0 {
-
+			//fmt.Printf("reduce task %d finished\n", ret)
+		} else if over {
+			// DoReduceTask return -1, there is a err, just try again, if return over == true,
+			// then all map tasks have finished
+			reduceOver = true
 		}
-		// DoMapTask return 0, there is not IDLE map task, try DoReduceTask
 	}
 
 }
