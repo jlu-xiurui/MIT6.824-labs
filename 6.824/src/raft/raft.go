@@ -18,13 +18,13 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -118,12 +118,14 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	encoder.Encode(rf.CurrentTerm)
+	encoder.Encode(rf.VotedFor)
+	encoder.Encode(rf.Log)
+	DPrintf("[%d] call persist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
+	data := writer.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -135,17 +137,23 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reader := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(reader)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if decoder.Decode(&currentTerm) != nil ||
+		decoder.Decode(&votedFor) != nil ||
+		decoder.Decode(&log) != nil {
+		panic("readPersist : decode err")
+	} else {
+		DPrintf("[%d] call readPersist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
+		rf.CurrentTerm = currentTerm
+		rf.VotedFor = votedFor
+		rf.Log = log
+	}
 }
 
 //
@@ -221,6 +229,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.ElectionTimeout = GetElectionTimeout()
 	}
 	LastIndex := len(rf.Log)
@@ -233,6 +242,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.VotedFor == -1 && (LastTerm < args.LastLogTerm || (LastTerm == args.LastLogTerm && LastIndex <= args.LastLogIndex)) {
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
+		rf.persist()
 		DPrintf("[%d] VoteFor %d(term : %d)\n", rf.me, args.CandidateId, rf.CurrentTerm)
 	}
 }
@@ -254,6 +264,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.persist()
 		rf.ElectionTimeout = GetElectionTimeout()
 	}
 	if args.Term < rf.CurrentTerm {
@@ -281,6 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			log = append(log, args.Entries[i])
 		}
 		rf.Log = log
+		rf.persist()
 		DPrintf("[%d] Append new log, new log is %v", rf.me, rf.Log)
 	}
 	if args.LeaderCommit > rf.CommitIndex {
@@ -354,6 +366,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	logEntry := LogEntry{Command: command, Term: rf.CurrentTerm, Index: len(rf.Log) + 1}
 	rf.Log = append(rf.Log, logEntry)
+	rf.persist()
 	rf.mu.Unlock()
 	DPrintf("[%d] Start() ,index : %d,term : %d,command : %d", rf.me, logEntry.Index, logEntry.Term, command)
 	return logEntry.Index, logEntry.Term, isLeader
@@ -391,6 +404,7 @@ func (rf *Raft) DoElection() {
 	finished := 1
 	voteGranted := 1
 	rf.VotedFor = rf.me
+	rf.persist()
 	rf.ElectionTimeout = GetElectionTimeout()
 	cond := sync.NewCond(&rf.mu)
 	term := rf.CurrentTerm
@@ -417,6 +431,7 @@ func (rf *Raft) DoElection() {
 				}
 				if reply.Term > rf.CurrentTerm {
 					rf.CurrentTerm = reply.Term
+					rf.persist()
 					rf.State = FOLLOWER
 					rf.ElectionTimeout = GetElectionTimeout()
 				}
@@ -513,6 +528,7 @@ func (rf *Raft) TrySendEntries(initialize bool) {
 							rf.State = FOLLOWER
 							rf.ElectionTimeout = GetElectionTimeout()
 							rf.VotedFor = -1
+							rf.persist()
 							rf.mu.Unlock()
 							return
 						}
@@ -541,6 +557,17 @@ func (rf *Raft) TrySendEntries(initialize bool) {
 					reply := AppendEntriesReply{}
 					//DPrintf("[%d] send heartBeat to server %d\n", rf.me, server)
 					rf.sendAppendEntries(server, &args, &reply)
+					rf.mu.Lock()
+					if reply.Term > rf.CurrentTerm {
+						rf.CurrentTerm = reply.Term
+						rf.State = FOLLOWER
+						rf.ElectionTimeout = GetElectionTimeout()
+						rf.VotedFor = -1
+						rf.persist()
+						rf.mu.Unlock()
+						return
+					}
+					rf.mu.Unlock()
 				}(i)
 			}
 		}
@@ -631,9 +658,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.VotedFor = -1
 	rf.MatchIndex = make([]int, len(peers))
 	rf.NextIndex = make([]int, len(peers))
+	rf.mu.Unlock()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.mu.Unlock()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
