@@ -747,30 +747,43 @@ func TestPersist22C(t *testing.T) {
 		leader1 := cfg.checkOneLeader()
 
 		cfg.disconnect((leader1 + 1) % servers)
+		DPrintf("[TEST] SERVER %d DISCONNECT", (leader1+1)%servers)
 		cfg.disconnect((leader1 + 2) % servers)
+		DPrintf("[TEST] SERVER %d DISCONNECT", (leader1+2)%servers)
 
 		cfg.one(10+index, servers-2, true)
 		index++
 
 		cfg.disconnect((leader1 + 0) % servers)
+		DPrintf("[TEST] SERVER %d DISCONNECT", (leader1+0)%servers)
 		cfg.disconnect((leader1 + 3) % servers)
+		DPrintf("[TEST] SERVER %d DISCONNECT", (leader1+3)%servers)
 		cfg.disconnect((leader1 + 4) % servers)
+		DPrintf("[TEST] SERVER %d DISCONNECT", (leader1+4)%servers)
 
 		cfg.start1((leader1+1)%servers, cfg.applier)
+		DPrintf("[TEST] SERVER %d RESTART", (leader1+1)%servers)
 		cfg.start1((leader1+2)%servers, cfg.applier)
+		DPrintf("[TEST] SERVER %d RESTART", (leader1+2)%servers)
 		cfg.connect((leader1 + 1) % servers)
+		DPrintf("[TEST] SERVER %d RECONNECT", (leader1+1)%servers)
 		cfg.connect((leader1 + 2) % servers)
+		DPrintf("[TEST] SERVER %d RECONNECT", (leader1+2)%servers)
 
 		time.Sleep(RaftElectionTimeout)
 
 		cfg.start1((leader1+3)%servers, cfg.applier)
+		DPrintf("[TEST] SERVER %d RESTART", (leader1+3)%servers)
 		cfg.connect((leader1 + 3) % servers)
+		DPrintf("[TEST] SERVER %d RECONNECT", (leader1+3)%servers)
 
 		cfg.one(10+index, servers-2, true)
 		index++
 
 		cfg.connect((leader1 + 4) % servers)
+		DPrintf("[TEST] SERVER %d RECONNECT", (leader1+4)%servers)
 		cfg.connect((leader1 + 0) % servers)
+		DPrintf("[TEST] SERVER %d RECONNECT", (leader1+0)%servers)
 	}
 
 	cfg.one(1000, servers, true)

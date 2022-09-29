@@ -94,7 +94,7 @@ type Raft struct {
 // believes it is the leader.
 func GetElectionTimeout() int {
 	rand.Seed(time.Now().UnixNano())
-	return ELECTIONTIMEOUTBASE + int(rand.Int31n(ELECTIONTIMEOUTRANGE))
+	return ELECTIONTIMEOUTBASE //+ int(rand.Int31n(ELECTIONTIMEOUTRANGE))
 }
 func (rf *Raft) GetState() (int, bool) {
 	if rf.killed() {
@@ -149,10 +149,10 @@ func (rf *Raft) readPersist(data []byte) {
 		decoder.Decode(&log) != nil {
 		panic("readPersist : decode err")
 	} else {
-		DPrintf("[%d] call readPersist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
 		rf.CurrentTerm = currentTerm
 		rf.VotedFor = votedFor
 		rf.Log = log
+		DPrintf("[%d] call readPersist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
 	}
 }
 
@@ -220,6 +220,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 
 	rf.mu.Lock()
+	DPrintf("[%d] Get RequestVote from %d", rf.me, args.CandidateId)
 	defer rf.mu.Unlock()
 	reply.Term = rf.CurrentTerm
 	if rf.CurrentTerm > args.Term {
@@ -230,7 +231,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
 		rf.persist()
-		rf.ElectionTimeout = GetElectionTimeout()
 	}
 	LastIndex := len(rf.Log)
 	var LastTerm int
@@ -243,8 +243,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
 		rf.persist()
+		rf.ElectionTimeout = GetElectionTimeout()
 		DPrintf("[%d] VoteFor %d(term : %d)\n", rf.me, args.CandidateId, rf.CurrentTerm)
 	}
+	DPrintf("[%d] RequestVote deny %d", rf.me, args.CandidateId)
 }
 func min(a int, b int) int {
 	if a < b {
@@ -359,7 +361,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	_, isLeader := rf.GetState()
-	if !isLeader {
+	if !isLeader || rf.killed() {
+		DPrintf("[%d] Start() Fail isleader = %t, isKilled = %t", rf.me, isLeader, rf.killed())
 		return -1, -1, false
 	}
 	// Your code here (2B).
@@ -439,20 +442,19 @@ func (rf *Raft) DoElection() {
 			}(i)
 		}
 	}
-	timeout := false
-	go func(electionTimeout int, timeout *bool) {
+	var timeout int32
+	go func(electionTimeout int, timeout *int32) {
 		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
-		rf.mu.Lock()
-		*timeout = true
-		rf.mu.Unlock()
+		atomic.StoreInt32(timeout, 1)
 		cond.Broadcast()
+		DPrintf("[%d] timeout ", rf.me)
 	}(ElectionTimeout, &timeout)
 	for {
 		rf.mu.Lock()
-		if finished < len(rf.peers) && voteGranted <= len(rf.peers)/2 && rf.CurrentTerm == term && rf.State == CANDIDATE && !timeout {
+		if finished < len(rf.peers) && voteGranted <= len(rf.peers)/2 && rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0 {
 			cond.Wait()
 		}
-		if !(rf.CurrentTerm == term && rf.State == CANDIDATE && !timeout) {
+		if !(rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0) {
 			rf.mu.Unlock()
 			return
 		}
