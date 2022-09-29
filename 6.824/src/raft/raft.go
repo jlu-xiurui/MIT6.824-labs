@@ -19,7 +19,6 @@ package raft
 
 import (
 	"bytes"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,14 +87,13 @@ type Raft struct {
 	LastApplied     int
 	NextIndex       []int
 	MatchIndex      []int
+
+	LastIncludedIndex int
+	LastIncludedTerm  int
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
-func GetElectionTimeout() int {
-	rand.Seed(time.Now().UnixNano())
-	return ELECTIONTIMEOUTBASE //+ int(rand.Int31n(ELECTIONTIMEOUTRANGE))
-}
 func (rf *Raft) GetState() (int, bool) {
 	if rf.killed() {
 		return -1, false
@@ -173,7 +171,17 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	//rf.mu.Lock()
+	DPrintf("[%d] CALL Snapshot index = %d", rf.me, index)
+	rf.persister.snapshot = snapshot
+	var log []LogEntry
+	for i := index + 1; i < rf.GetLastEntry().Index; i++ {
+		log = append(log, rf.GetLogIndex(i))
+	}
+	rf.Log = log
+	rf.LastIncludedTerm = rf.GetLogIndex(index).Term
+	rf.LastIncludedIndex = index
+	//rf.mu.Unlock()
 }
 
 //
@@ -208,9 +216,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term             int
-	Success          bool
-	RequestNextIndex int
+	Term    int
+	Success bool
+	XTerm   int
+	XIndex  int
+	XLen    int
 }
 
 //
@@ -220,7 +230,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 
 	rf.mu.Lock()
-	DPrintf("[%d] Get RequestVote from %d", rf.me, args.CandidateId)
+	//DPrintf("[%d] Get RequestVote from %d", rf.me, args.CandidateId)
 	defer rf.mu.Unlock()
 	reply.Term = rf.CurrentTerm
 	if rf.CurrentTerm > args.Term {
@@ -232,13 +242,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.VotedFor = -1
 		rf.persist()
 	}
-	LastIndex := len(rf.Log)
-	var LastTerm int
-	if LastIndex == 0 {
-		LastTerm = -1
-	} else {
-		LastTerm = rf.Log[LastIndex-1].Term
-	}
+	LastEntry := rf.GetLastEntry()
+	LastIndex := LastEntry.Index
+	LastTerm := LastEntry.Term
 	if rf.VotedFor == -1 && (LastTerm < args.LastLogTerm || (LastTerm == args.LastLogTerm && LastIndex <= args.LastLogIndex)) {
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
@@ -246,13 +252,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.ElectionTimeout = GetElectionTimeout()
 		DPrintf("[%d] VoteFor %d(term : %d)\n", rf.me, args.CandidateId, rf.CurrentTerm)
 	}
-	DPrintf("[%d] RequestVote deny %d", rf.me, args.CandidateId)
-}
-func min(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	//DPrintf("[%d] RequestVote deny %d", rf.me, args.CandidateId)
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
@@ -273,17 +273,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	if len(rf.Log) < args.PrevLogIndex || args.PrevLogTerm != rf.GetLogIndex(args.PrevLogIndex-1).Term {
+	if rf.GetLastEntry().Index < args.PrevLogIndex || args.PrevLogTerm != rf.GetLogIndex(args.PrevLogIndex).Term {
 		DPrintf("[%d] AppendEntries fail because of consistence", rf.me)
-		if len(rf.Log) < args.PrevLogIndex {
-			reply.RequestNextIndex = len(rf.Log) + 1
-		} else {
-			term := rf.GetLogIndex(args.PrevLogIndex - 1).Term
-			for i := args.PrevLogIndex - 1; i >= 0; i-- {
-				if rf.Log[i].Term == term {
-					reply.RequestNextIndex = i + 1
-				}
+		reply.XLen = rf.GetLastEntry().Index
+		if rf.GetLastEntry().Index >= args.PrevLogIndex {
+			reply.XTerm = rf.GetLogIndex(args.PrevLogIndex).Term
+			reply.XIndex = args.PrevLogIndex
+			for reply.XIndex > 0 && rf.GetLogIndex(reply.XIndex).Term == reply.XTerm {
+				reply.XIndex--
 			}
+			reply.XIndex++
 		}
 		reply.Success = false
 		return
@@ -298,7 +297,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%d] Append new log, new log is %v", rf.me, rf.Log)
 	}
 	if args.LeaderCommit > rf.CommitIndex {
-		newCommitIndex := min(args.LeaderCommit, len(rf.Log))
+		newCommitIndex := Min(args.LeaderCommit, rf.GetLastEntry().Index)
 		for N := rf.CommitIndex + 1; N <= newCommitIndex; N++ {
 			rf.applych <- ApplyMsg{CommandValid: true, Command: rf.Log[N-1].Command, CommandIndex: N}
 		}
@@ -367,7 +366,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	// Your code here (2B).
 	rf.mu.Lock()
-	logEntry := LogEntry{Command: command, Term: rf.CurrentTerm, Index: len(rf.Log) + 1}
+	logEntry := LogEntry{Command: command, Term: rf.CurrentTerm, Index: rf.GetLastEntry().Index + 1}
 	rf.Log = append(rf.Log, logEntry)
 	rf.persist()
 	rf.mu.Unlock()
@@ -395,13 +394,6 @@ func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
-func (rf *Raft) GetLogIndex(index int) LogEntry {
-	if index == -1 {
-		return LogEntry{Term: -1, Index: 0}
-	} else {
-		return rf.Log[index]
-	}
-}
 func (rf *Raft) DoElection() {
 	rf.CurrentTerm++
 	finished := 1
@@ -413,8 +405,8 @@ func (rf *Raft) DoElection() {
 	term := rf.CurrentTerm
 	ElectionTimeout := rf.ElectionTimeout
 	var lastLogTerm, lastLogIndex int
-	lastLogIndex = len(rf.Log)
-	lastLogTerm = rf.GetLogIndex(lastLogIndex - 1).Term
+	lastLogIndex = rf.GetLastEntry().Index
+	lastLogTerm = rf.GetLastEntry().Term
 	DPrintf("[%d] Start Election,term = %d\n", rf.me, term)
 	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
@@ -447,14 +439,14 @@ func (rf *Raft) DoElection() {
 		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
 		atomic.StoreInt32(timeout, 1)
 		cond.Broadcast()
-		DPrintf("[%d] timeout ", rf.me)
+
 	}(ElectionTimeout, &timeout)
 	for {
 		rf.mu.Lock()
 		if finished < len(rf.peers) && voteGranted <= len(rf.peers)/2 && rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0 {
 			cond.Wait()
 		}
-		if !(rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0) {
+		if rf.CurrentTerm != term || rf.State != CANDIDATE || atomic.LoadInt32(&timeout) != 0 {
 			rf.mu.Unlock()
 			return
 		}
@@ -465,9 +457,13 @@ func (rf *Raft) DoElection() {
 			rf.mu.Unlock()
 			for i := 0; i < len(rf.peers); i++ {
 				rf.MatchIndex[i] = 0
-				rf.NextIndex[i] = rf.GetLogIndex(len(rf.Log)-1).Index + 1
+				rf.NextIndex[i] = rf.GetLastEntry().Index + 1
 			}
 			rf.TrySendEntries(true)
+			return
+		}
+		if finished == len(rf.peers) {
+			rf.mu.Unlock()
 			return
 		}
 		rf.mu.Unlock()
@@ -496,7 +492,7 @@ func (rf *Raft) SendHeartBeat() {
 func (rf *Raft) TrySendEntries(initialize bool) {
 	rf.mu.Lock()
 	term := rf.CurrentTerm
-	lastLogIndex := len(rf.Log)
+	lastLogIndex := rf.GetLastEntry().Index
 	leaderCommit := rf.CommitIndex
 	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
@@ -515,7 +511,7 @@ func (rf *Raft) TrySendEntries(initialize bool) {
 						}
 						done = true
 						prevLogIndex := rf.NextIndex[server] - 1
-						prevLogTerm := rf.GetLogIndex(prevLogIndex - 1).Term
+						prevLogTerm := rf.GetLogIndex(prevLogIndex).Term
 						entries := rf.Log[prevLogIndex:]
 						DPrintf("[%d] send Entries to server %d,prevLogIndex = %d,prevLogTerm = %d,log is %v\n", rf.me, server, prevLogIndex, prevLogTerm, rf.Log)
 						rf.mu.Unlock()
@@ -535,7 +531,20 @@ func (rf *Raft) TrySendEntries(initialize bool) {
 							return
 						}
 						if !reply.Success {
-							rf.NextIndex[server] = reply.RequestNextIndex
+							if reply.XLen < prevLogIndex {
+								rf.NextIndex[server] = reply.XLen
+							} else {
+								newNextIndex := prevLogIndex
+								for newNextIndex > 0 && rf.GetLogIndex(newNextIndex).Term > reply.XTerm {
+									newNextIndex--
+								}
+								if rf.GetLogIndex(newNextIndex).Term == reply.XTerm {
+									rf.NextIndex[server] = newNextIndex
+								} else {
+									rf.NextIndex[server] = reply.XIndex
+								}
+							}
+							rf.NextIndex[server] = Max(rf.NextIndex[server], 1)
 							done = false
 						} else {
 							rf.NextIndex[server] = prevLogIndex + len(entries) + 1
@@ -553,11 +562,11 @@ func (rf *Raft) TrySendEntries(initialize bool) {
 						return
 					}
 					prevLogIndex := rf.NextIndex[server] - 1
-					prevLogTerm := rf.GetLogIndex(prevLogIndex - 1).Term
+					prevLogTerm := rf.GetLogIndex(prevLogIndex).Term
 					rf.mu.Unlock()
 					args := AppendEntriesArgs{Term: term, LeaderId: rf.me, LeaderCommit: leaderCommit, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
 					reply := AppendEntriesReply{}
-					//DPrintf("[%d] send heartBeat to server %d\n", rf.me, server)
+					DPrintf("[%d] send heartBeat to server %d\n", rf.me, server)
 					rf.sendAppendEntries(server, &args, &reply)
 					rf.mu.Lock()
 					if reply.Term > rf.CurrentTerm {
@@ -579,8 +588,8 @@ func (rf *Raft) UpdateCommitIndex() {
 	rf.mu.Lock()
 	oldCommitIndex := rf.CommitIndex
 	DPrintf("[%d] Update CommitIndex, term = %d,NextIndex is %v,MatchIndex is %v,CommitIndex is %d", rf.me, rf.CurrentTerm, rf.NextIndex, rf.MatchIndex, rf.CommitIndex)
-	for N := rf.CommitIndex + 1; N <= len(rf.Log); N++ {
-		if rf.Log[N-1].Term == rf.CurrentTerm {
+	for N := rf.CommitIndex + 1; N <= rf.GetLastEntry().Index; N++ {
+		if rf.GetLogIndex(N).Term == rf.CurrentTerm {
 			count := 1
 			for i := 0; i < len(rf.peers); i++ {
 				if rf.MatchIndex[i] >= N {
@@ -593,11 +602,11 @@ func (rf *Raft) UpdateCommitIndex() {
 			}
 		}
 	}
-	for N := oldCommitIndex + 1; N <= rf.CommitIndex; N++ {
-		DPrintf("[%d] send ApplyMsg of index %d", rf.me, N)
-		rf.applych <- ApplyMsg{CommandValid: true, Command: rf.Log[N-1].Command, CommandIndex: N}
-	}
 	DPrintf("[%d] NextIndex is %v,MatchIndex is %v,CommitIndex is %d", rf.me, rf.NextIndex, rf.MatchIndex, rf.CommitIndex)
+	for N := oldCommitIndex + 1; N <= rf.CommitIndex; N++ {
+		rf.applych <- ApplyMsg{CommandValid: true, Command: rf.GetLogIndex(N).Command, CommandIndex: N}
+		DPrintf("[%d] send ApplyMsg of index %d", rf.me, N)
+	}
 	rf.mu.Unlock()
 }
 func (rf *Raft) ticker() {
@@ -616,6 +625,7 @@ func (rf *Raft) ticker() {
 			//rf.SendHeartBeat()
 			time.Sleep(time.Duration(rf.BroadcastTime) * time.Millisecond)
 		} else if State == FOLLOWER {
+			DPrintf("[%d] ElectionTimeout = %d", me, rf.ElectionTimeout)
 			if rf.ElectionTimeout < rf.BroadcastTime {
 				rf.State = CANDIDATE
 				DPrintf("[%d] ElectionTimeout,convert to CANDIDATE\n", me)

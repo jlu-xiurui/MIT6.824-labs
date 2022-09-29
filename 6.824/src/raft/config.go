@@ -249,6 +249,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			cfg.mu.Unlock()
 
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
+				DPrintf("[SNAPSHOT] TEST CALL")
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
 				e.Encode(m.CommandIndex)
@@ -580,7 +581,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			cfg.mu.Unlock()
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
-				DPrintf("[TEST] ONE CALL Start cmd = %d, starts = %d, ok = %t", cmd, starts, ok)
+				//DPrintf("[TEST] ONE CALL Start cmd = %d, starts = %d, ok = %t", cmd, starts, ok)
 				if ok {
 					index = index1
 					break
@@ -599,7 +600,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 					// committed
 					if cmd1 == cmd {
 						// and it was the command we submitted.
-						DPrintf("[TEST] ONE SUCCESS cmd = %d", cmd)
+						//DPrintf("[TEST] ONE SUCCESS cmd = %d", cmd)
 						return index
 					}
 				}

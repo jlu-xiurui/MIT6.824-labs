@@ -1,6 +1,10 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"math/rand"
+	"time"
+)
 
 // Debugging
 const Debug = true
@@ -10,4 +14,33 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 		log.Printf(format, a...)
 	}
 	return
+}
+func (rf *Raft) GetLastEntry() LogEntry {
+	if len(rf.Log) == 0 {
+		return LogEntry{Term: -1, Index: 0}
+	}
+	return rf.Log[len(rf.Log)-1]
+}
+func GetElectionTimeout() int {
+	rand.Seed(time.Now().UnixNano())
+	return ELECTIONTIMEOUTBASE + int(rand.Int31n(ELECTIONTIMEOUTRANGE))
+}
+func (rf *Raft) GetLogIndex(index int) LogEntry {
+	if index == 0 {
+		return LogEntry{Term: -1, Index: 0}
+	} else {
+		return rf.Log[index-rf.LastIncludedIndex-1]
+	}
+}
+func Min(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func Max(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
