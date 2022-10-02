@@ -249,7 +249,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			cfg.mu.Unlock()
 
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
-				DPrintf("[SNAPSHOT] TEST CALL")
+				DPrintf("[SNAPSHOT] %d TEST CALL", rf.me)
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
 				e.Encode(m.CommandIndex)

@@ -7,7 +7,7 @@ import (
 )
 
 // Debugging
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -17,9 +17,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 func (rf *Raft) GetLastEntry() LogEntry {
 	if len(rf.Log) == 0 {
-		return LogEntry{Term: -1, Index: 0}
+		return LogEntry{Term: rf.LastIncludedTerm, Index: rf.LastIncludedIndex}
 	}
 	return rf.Log[len(rf.Log)-1]
+}
+func (rf *Raft) GetFirstEntry() LogEntry {
+	if len(rf.Log) == 0 {
+		return LogEntry{Term: rf.LastIncludedTerm, Index: rf.LastIncludedIndex}
+	}
+	return rf.Log[0]
 }
 func GetElectionTimeout() int {
 	rand.Seed(time.Now().UnixNano())
@@ -28,6 +34,8 @@ func GetElectionTimeout() int {
 func (rf *Raft) GetLogIndex(index int) LogEntry {
 	if index == 0 {
 		return LogEntry{Term: -1, Index: 0}
+	} else if index == rf.LastIncludedIndex {
+		return LogEntry{Term: rf.LastIncludedTerm, Index: rf.LastIncludedIndex}
 	} else {
 		return rf.Log[index-rf.LastIncludedIndex-1]
 	}
