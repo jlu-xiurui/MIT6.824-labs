@@ -41,7 +41,7 @@ func Reduce(key string, values []string) string {
 
 ### 系统架构及执行流程
 
-![Lab1_figure2](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure1.png)
+![Lab1_figure2](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure2.png)
 
 上图为MapReduce系统的基本架构及其执行流程，在系统中由**Master**服务器负责管理系统的各种元数据（如中间文件存储位置、系统输入文件执行位置等），并管理map和reduce任务的执行状态；**Worker**服务器负责对map和reduce任务的实际执行，其通过RPC向**Master**服务器请求任务及其所需的元数据。
 
