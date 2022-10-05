@@ -6,7 +6,7 @@
 
 ### Map及Reduce函数
 
-![Lab1_figure1]([C:\Users\xiurui1517\Desktop\计算机书单\6.824\noteFigures\Lab1_figure1.png](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure1.png))
+![Lab1_figure1](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure1.png)
 
 在MapReduce系统中，用户需要定义自己的 `map` 和 `reduce` 函数以完成上图任务，其中 `map` 函数获取系统的输入<文件名，文件文本>键值对，将其转化为一系列的中间键值对并存入中间文件；`reduce` 函数获取中间键值对中的某一键以及对应的所有值，并在进行一系列处理后得到任务输出。下面是一组 `map` 和 `reduce`函数的实例：
 
@@ -41,7 +41,7 @@ func Reduce(key string, values []string) string {
 
 ### 系统架构及执行流程
 
-![Lab1_figure2]([C:\Users\xiurui1517\Desktop\计算机书单\6.824\noteFigures\Lab1_figure2.png](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure2.png))
+![Lab1_figure2](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab1_figure1.png)
 
 上图为MapReduce系统的基本架构及其执行流程，在系统中由**Master**服务器负责管理系统的各种元数据（如中间文件存储位置、系统输入文件执行位置等），并管理map和reduce任务的执行状态；**Worker**服务器负责对map和reduce任务的实际执行，其通过RPC向**Master**服务器请求任务及其所需的元数据。
 
