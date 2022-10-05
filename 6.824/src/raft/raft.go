@@ -470,6 +470,10 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 func (rf *Raft) DoElection() {
+	if rf.VotedFor != -1 {
+		rf.mu.Unlock()
+		return
+	}
 	rf.CurrentTerm++
 	finished := 1
 	voteGranted := 1
@@ -487,6 +491,7 @@ func (rf *Raft) DoElection() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go func(server int) {
+
 				args := RequestVoteArgs{Term: term, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
 				reply := RequestVoteReply{}
 				DPrintf("[%d] send RequestVote to server %d\n", rf.me, server)
@@ -523,8 +528,7 @@ func (rf *Raft) DoElection() {
 			cond.Wait()
 		}
 		if rf.CurrentTerm != term || rf.State != CANDIDATE || atomic.LoadInt32(&timeout) != 0 {
-			rf.mu.Unlock()
-			return
+			break
 		}
 		if voteGranted > len(rf.peers)/2 {
 			DPrintf("[%d] is voted as LEADER(term : %d)\n", rf.me, rf.CurrentTerm)
@@ -539,11 +543,12 @@ func (rf *Raft) DoElection() {
 			return
 		}
 		if finished == len(rf.peers) {
-			rf.mu.Unlock()
-			return
+			break
 		}
 		rf.mu.Unlock()
 	}
+	rf.VotedFor = -1
+	rf.mu.Unlock()
 }
 
 // The ticker go routine starts a new election if this peer hasn't received

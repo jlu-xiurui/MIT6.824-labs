@@ -57,7 +57,17 @@ func DoMapTask(mapf func(string, string) []KeyValue) (int, bool) {
 	taskId := reply.TaskId
 	nReduce := reply.NReduce
 	//fmt.Printf("task %d content : %s,filename : %s", taskId, reply.Content, reply.Filename)
-	kva := mapf(reply.Filename, string(reply.Content))
+	filePath := reply.Path + "/" + reply.Filename
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalf("cannot open %v", filePath)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filePath)
+	}
+	file.Close()
+	kva := mapf(reply.Filename, string(content))
 	intermediate := make([][]KeyValue, nReduce)
 	for _, kv := range kva {
 		i := ihash(kv.Key) % nReduce
@@ -167,45 +177,38 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()'
-	mapOver := false
-	reduceOver := false
-	for !mapOver || !reduceOver {
+	mapDone := false
+	reduceDone := false
+	for !mapDone || !reduceDone {
 		// try DoMapTask, if OK or cause err, then continue and try another map task
-		if !mapOver {
-			if ret, over := DoMapTask(mapf); ret >= 0 {
+		if !mapDone {
+			if ret, Done := DoMapTask(mapf); ret >= 0 {
 				args := TaskOverArgs{ret}
 				reply := TaskOverReply{}
 
-				for {
-					if ok := call("Coordinator.MapOver", &args, &reply); ok {
-						break
-					}
+				for !call("Coordinator.MapOver", &args, &reply) {
 				}
 				//fmt.Printf("map task %d finished\n", ret)
-			} else if over {
+			} else if Done {
 				// DoMapTask return -1, there is a err, just try again, if return over == true,
 				// then all map tasks have finished
-				mapOver = true
+				mapDone = true
 			}
-			continue
-		}
-		// try DoReduceTask
-		if ret, over := DoReduceTask(reducef); ret >= 0 {
-			args := TaskOverArgs{ret}
-			reply := TaskOverReply{}
-			for {
-				if ok := call("Coordinator.ReduceOver", &args, &reply); ok {
-					break
+		} else {
+			// try DoReduceTask
+			if ret, Done := DoReduceTask(reducef); ret >= 0 {
+				args := TaskOverArgs{ret}
+				reply := TaskOverReply{}
+				for !call("Coordinator.ReduceOver", &args, &reply) {
 				}
+				//fmt.Printf("reduce task %d finished\n", ret)
+			} else if Done {
+				// DoReduceTask return -1, there is a err, just try again, if return over == true,
+				// then all map tasks have finished
+				reduceDone = true
 			}
-			//fmt.Printf("reduce task %d finished\n", ret)
-		} else if over {
-			// DoReduceTask return -1, there is a err, just try again, if return over == true,
-			// then all map tasks have finished
-			reduceOver = true
 		}
 	}
-
 }
 
 //

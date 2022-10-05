@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -15,11 +14,11 @@ type Coordinator struct {
 	// Your definitions here.
 	MapTask      []Task
 	ReduceTask   []Task
-	Contents     []string
+	Path         string
 	FileName     []string
 	MapRemain    int
 	ReduceRemain int
-	Cv           *sync.Cond
+	mu           sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -36,8 +35,8 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) AskMapTask(args *AskMapArgs, reply *AskMapReply) error {
 	// find a map task first, maybe IDLE or timeout
 	currTime := time.Now()
-	c.Cv.L.Lock()
-	defer c.Cv.L.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.MapRemain == 0 {
 		reply.TaskId = -1
 		reply.Over = true
@@ -49,7 +48,7 @@ func (c *Coordinator) AskMapTask(args *AskMapArgs, reply *AskMapReply) error {
 			c.MapTask[i].State = IN_PROGRESS
 			c.MapTask[i].WorkerMachine = Machine{args.WorkerMachine.Path}
 			c.MapTask[i].StartTime = currTime
-			reply.Content = c.Contents[i]
+			reply.Path = c.Path
 			reply.Filename = c.FileName[i]
 			reply.TaskId = i
 			reply.NReduce = len(c.ReduceTask)
@@ -63,24 +62,18 @@ func (c *Coordinator) AskMapTask(args *AskMapArgs, reply *AskMapReply) error {
 }
 
 func (c *Coordinator) MapOver(args *TaskOverArgs, reply *TaskOverReply) error {
-	c.Cv.L.Lock()
-	defer c.Cv.L.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	i := args.TaskId
 	c.MapTask[i].State = COMPLETE
 	c.MapRemain--
-	if c.MapRemain == 0 {
-		c.Cv.Broadcast()
-	}
 	//fmt.Printf("map task %d over\n", i)
 	return nil
 }
 
 func (c *Coordinator) AskReduceTask(args *AskReduceArgs, reply *AskReduceReply) error {
-	c.Cv.L.Lock()
-	defer c.Cv.L.Unlock()
-	if c.MapRemain != 0 {
-		c.Cv.Wait()
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ReduceRemain == 0 {
 		reply.TaskId = -1
 		reply.Over = true
@@ -107,8 +100,8 @@ func (c *Coordinator) AskReduceTask(args *AskReduceArgs, reply *AskReduceReply) 
 }
 
 func (c *Coordinator) ReduceOver(args *TaskOverArgs, reply *TaskOverReply) error {
-	c.Cv.L.Lock()
-	defer c.Cv.L.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	i := args.TaskId
 	c.ReduceTask[i].State = COMPLETE
 	c.ReduceRemain--
@@ -139,8 +132,8 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 
 	// Your code here.
-	c.Cv.L.Lock()
-	defer c.Cv.L.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.ReduceRemain == 0
 }
 
@@ -156,23 +149,23 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	nMap := len(files)
 	c.MapTask = make([]Task, nMap)
 	c.ReduceTask = make([]Task, nReduce)
-	c.Contents = make([]string, nMap)
+	path, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Getwd failed")
+	}
+	c.Path = path
 	c.FileName = make([]string, nMap)
 	c.MapRemain = nMap
 	c.ReduceRemain = nReduce
-	c.Cv = sync.NewCond(&sync.Mutex{})
-	for i, filename := range os.Args[1:] {
-		file, err := os.Open(filename)
+	for i, filename := range files {
+		//file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
 		}
-		content, err := ioutil.ReadAll(file)
-		c.Contents[i] = string(content)
+		//content, err := ioutil.ReadAll(file)
+		//c.Contents[i] = string(content)
 		c.FileName[i] = filename
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
+		//file.Close()
 	}
 
 	c.server()

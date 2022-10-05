@@ -49,7 +49,7 @@ type AskMapArgs struct {
 }
 
 type AskMapReply struct {
-	Content  string
+	Path     string
 	Filename string
 	TaskId   int
 	NReduce  int
