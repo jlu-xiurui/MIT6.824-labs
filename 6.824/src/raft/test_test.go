@@ -1238,6 +1238,7 @@ func TestSnapshotAllCrash2D(t *testing.T) {
 		index1 := cfg.one(rand.Int(), servers, true)
 
 		// crash all
+		DPrintf("[TEST] CRASH")
 		for i := 0; i < servers; i++ {
 			cfg.crash1(i)
 		}
@@ -1247,7 +1248,7 @@ func TestSnapshotAllCrash2D(t *testing.T) {
 			cfg.start1(i, cfg.applierSnap)
 			cfg.connect(i)
 		}
-
+		DPrintf("[TEST] RESTART")
 		index2 := cfg.one(rand.Int(), servers, true)
 		if index2 < index1+1 {
 			t.Fatalf("index decreased from %v to %v", index1, index2)
