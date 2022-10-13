@@ -123,9 +123,9 @@ func (rf *Raft) persist() {
 	encoder.Encode(rf.Log)
 	encoder.Encode(rf.LastIncludedIndex)
 	encoder.Encode(rf.LastIncludedTerm)
-	DPrintf("[%d] call persist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
 	data := writer.Bytes()
 	rf.persister.SaveRaftState(data)
+	DPrintf("[%d] call Persist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d,lastIncludedIndex = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log), rf.LastIncludedIndex)
 }
 
 //
@@ -158,7 +158,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.Log = log
 		rf.LastIncludedIndex = lastIncludedIndex
 		rf.LastIncludedTerm = lastIncludedTerm
-		DPrintf("[%d] call readPersist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log))
+		DPrintf("[%d] call readPersist(),rf.CurrentTerm = %d,rf.VotedFor = %d,rf.Log len = %d,lastIncludedIndex = %d", rf.me, rf.CurrentTerm, rf.VotedFor, len(rf.Log), lastIncludedIndex)
 	}
 }
 
@@ -181,9 +181,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	DPrintf("[%d] CALL Snapshot index = %d", rf.me, index)
-	newSnapshot := make([]byte, len(snapshot))
-	copy(newSnapshot, snapshot)
-	rf.persister.snapshot = newSnapshot
 	rf.LastIncludedTerm = rf.GetLogIndex(index).Term
 	var log []LogEntry
 	for i := index + 1; i <= rf.GetLastEntry().Index; i++ {
@@ -191,7 +188,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	}
 	rf.Log = log
 	rf.LastIncludedIndex = index
-	rf.persist()
+
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	encoder.Encode(rf.CurrentTerm)
+	encoder.Encode(rf.VotedFor)
+	encoder.Encode(rf.Log)
+	encoder.Encode(rf.LastIncludedIndex)
+	encoder.Encode(rf.LastIncludedTerm)
+	data := writer.Bytes()
+	rf.persister.SaveStateAndSnapshot(data, snapshot)
 	rf.mu.Unlock()
 }
 
@@ -265,7 +271,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
 		rf.persist()
-		//rf.ElectionTimeout = GetElectionTimeout()
 	}
 	LastEntry := rf.GetLastEntry()
 	LastIndex := LastEntry.Index
@@ -274,31 +279,32 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
 		rf.persist()
-		rf.ElectionTimeout = GetElectionTimeout()
-		DPrintf("[%d] VoteFor %d(term : %d)\n", rf.me, args.CandidateId, rf.CurrentTerm)
+
+		DPrintf("[%d %d] VoteFor %d(term : %d)\n", rf.me, rf.State, args.CandidateId, rf.CurrentTerm)
 	}
-	//DPrintf("[%d] RequestVote deny %d", rf.me, args.CandidateId)
+	if reply.VoteGranted {
+		rf.ElectionTimeout = GetElectionTimeout()
+	}
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%d] get AppendEntries from %d, LastIncludeIndex = %d,logs = %v,(PrevLogIndex:%d,PrevLogTerm:%d,Leaderterm:%d)\n",
-		rf.me, args.LeaderId, rf.Log, rf.LastIncludedIndex, args.PrevLogIndex, args.PrevLogTerm, args.Term)
+	DPrintf("[%d %d] get AppendEntries from %d, LastIncludeIndex = %d,logs = %v,currterm = %d(PrevLogIndex:%d,PrevLogTerm:%d,Leaderterm:%d)\n",
+		rf.me, rf.State, args.LeaderId, rf.LastIncludedIndex, rf.Log, rf.CurrentTerm, args.PrevLogIndex, args.PrevLogTerm, args.Term)
 	reply.Term = rf.CurrentTerm
 	reply.LastIncludedIndex = rf.LastIncludedIndex
 	reply.Success = true
 	rf.ElectionTimeout = GetElectionTimeout()
+	if args.Term < rf.CurrentTerm || reply.LastIncludedIndex > args.PrevLogIndex {
+		reply.Success = false
+		return
+	}
 	if rf.CurrentTerm < args.Term || rf.State == CANDIDATE {
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
 		rf.persist()
-		rf.ElectionTimeout = GetElectionTimeout()
-	}
-	if args.Term < rf.CurrentTerm || reply.LastIncludedIndex > args.PrevLogIndex {
-		reply.Success = false
-		return
 	}
 	if rf.GetLastEntry().Index < args.PrevLogIndex || args.PrevLogTerm != rf.GetLogIndex(args.PrevLogIndex).Term {
 		reply.XLen = rf.GetLastEntry().Index
@@ -310,7 +316,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			reply.XIndex++
 		}
-		DPrintf("[%d] AppendEntries fail because of consistence, XLen = %d, XTerm = %d, XIndex = %d", rf.me, reply.XLen, reply.XTerm, reply.XIndex)
+		DPrintf("[%d %d] AppendEntries fail because of consistence, XLen = %d, XTerm = %d, XIndex = %d", rf.me, rf.State, reply.XLen, reply.XTerm, reply.XIndex)
 		reply.Success = false
 		return
 	}
@@ -324,31 +330,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.Log = log
 		rf.persist()
-		DPrintf("[%d] Append new log", rf.me)
+		DPrintf("[%d %d] Append new log", rf.me, rf.State)
 	}
 	if args.LeaderCommit > rf.CommitIndex {
 		rf.CommitIndex = Min(args.LeaderCommit, rf.GetLastEntry().Index)
-		DPrintf("[%d] CommitIndex update to %d\n", rf.me, rf.CommitIndex)
+		DPrintf("[%d %d] CommitIndex update to %d\n", rf.me, rf.State, rf.CommitIndex)
 	}
 }
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	reply.Term = rf.CurrentTerm
 	rf.ElectionTimeout = GetElectionTimeout()
+	if args.Term < rf.CurrentTerm || args.LastIncludedIndex <= rf.LastIncludedIndex {
+		rf.mu.Unlock()
+		return
+	}
 	if rf.CurrentTerm < args.Term || rf.State == CANDIDATE {
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
 		rf.persist()
-		rf.ElectionTimeout = GetElectionTimeout()
-	}
-	if args.Term < rf.CurrentTerm {
-		rf.mu.Unlock()
-		return
-	}
-	if args.LastIncludedIndex <= rf.LastIncludedIndex {
-		rf.mu.Unlock()
-		return
 	}
 	newSnapshot := make([]byte, len(args.Snapshot))
 	copy(newSnapshot, args.Snapshot)
@@ -367,6 +368,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.Log = log
 			rf.persist()
 			rf.mu.Unlock()
+			rf.applych <- ApplyMsg{SnapshotValid: true, Snapshot: args.Snapshot, SnapshotTerm: args.LastIncludedTerm, SnapshotIndex: args.LastIncludedIndex}
+
 			return
 		}
 	}
