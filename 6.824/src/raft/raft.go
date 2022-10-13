@@ -44,7 +44,7 @@ const FOLLOWER = 3
 
 const BROADCASTTIME = 100
 const ELECTIONTIMEOUTBASE = 1000
-const ELECTIONTIMEOUTRANGE = 500
+const ELECTIONTIMEOUTRANGE = 1000
 
 type ApplyMsg struct {
 	CommandValid bool
@@ -74,6 +74,7 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 	applych   chan ApplyMsg
+	cond      *sync.Cond
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -263,6 +264,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//DPrintf("[%d] Get RequestVote from %d", rf.me, args.CandidateId)
 	defer rf.mu.Unlock()
 	reply.Term = rf.CurrentTerm
+	LastEntry := rf.GetLastEntry()
+	LastIndex := LastEntry.Index
+	LastTerm := LastEntry.Term
 	if rf.CurrentTerm > args.Term {
 		reply.VoteGranted = false
 		return
@@ -272,18 +276,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.VotedFor = -1
 		rf.persist()
 	}
-	LastEntry := rf.GetLastEntry()
-	LastIndex := LastEntry.Index
-	LastTerm := LastEntry.Term
 	if rf.VotedFor == -1 && (LastTerm < args.LastLogTerm || (LastTerm == args.LastLogTerm && LastIndex <= args.LastLogIndex)) {
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId
 		rf.persist()
-
-		DPrintf("[%d %d] VoteFor %d(term : %d)\n", rf.me, rf.State, args.CandidateId, rf.CurrentTerm)
-	}
-	if reply.VoteGranted {
 		rf.ElectionTimeout = GetElectionTimeout()
+		DPrintf("[%d %d] VoteFor %d(term : %d)\n", rf.me, rf.State, args.CandidateId, rf.CurrentTerm)
 	}
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -304,6 +302,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.cond.Broadcast()
 		rf.persist()
 	}
 	if rf.GetLastEntry().Index < args.PrevLogIndex || args.PrevLogTerm != rf.GetLogIndex(args.PrevLogIndex).Term {
@@ -349,6 +348,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.State = FOLLOWER
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
+		rf.cond.Broadcast()
 		rf.persist()
 	}
 	newSnapshot := make([]byte, len(args.Snapshot))
@@ -480,7 +480,6 @@ func (rf *Raft) DoElection() {
 	rf.VotedFor = rf.me
 	rf.persist()
 	rf.ElectionTimeout = GetElectionTimeout()
-	cond := sync.NewCond(&rf.mu)
 	term := rf.CurrentTerm
 	ElectionTimeout := rf.ElectionTimeout
 	var lastLogTerm, lastLogIndex int
@@ -491,7 +490,6 @@ func (rf *Raft) DoElection() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go func(server int) {
-
 				args := RequestVoteArgs{Term: term, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
 				reply := RequestVoteReply{}
 				DPrintf("[%d] send RequestVote to server %d\n", rf.me, server)
@@ -510,7 +508,7 @@ func (rf *Raft) DoElection() {
 					rf.State = FOLLOWER
 					rf.ElectionTimeout = GetElectionTimeout()
 				}
-				cond.Broadcast()
+				rf.cond.Broadcast()
 			}(i)
 		}
 	}
@@ -518,13 +516,13 @@ func (rf *Raft) DoElection() {
 	go func(electionTimeout int, timeout *int32) {
 		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
 		atomic.StoreInt32(timeout, 1)
-		cond.Broadcast()
+		rf.cond.Broadcast()
 
 	}(ElectionTimeout, &timeout)
 	for {
 		rf.mu.Lock()
-		if finished < len(rf.peers) && voteGranted <= len(rf.peers)/2 && rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0 {
-			cond.Wait()
+		if voteGranted <= len(rf.peers)/2 && rf.CurrentTerm == term && rf.State == CANDIDATE && atomic.LoadInt32(&timeout) == 0 {
+			rf.cond.Wait()
 		}
 		if rf.CurrentTerm != term || rf.State != CANDIDATE || atomic.LoadInt32(&timeout) != 0 {
 			rf.mu.Unlock()
@@ -542,12 +540,13 @@ func (rf *Raft) DoElection() {
 			rf.TrySendEntries(true)
 			break
 		}
-		if finished == len(rf.peers) {
-			rf.mu.Unlock()
-			break
-		}
+		//if finished == len(rf.peers) {
+		//rf.mu.Unlock()
+		//break
+		//}
 		rf.mu.Unlock()
 	}
+	DPrintf("[%d] Do election finished", rf.me)
 
 }
 
@@ -710,6 +709,18 @@ func (rf *Raft) UpdateCommitIndex() {
 	DPrintf("[%d] Update CommitIndex, term = %d,NextIndex is %v,MatchIndex is %v,CommitIndex is %d", rf.me, rf.CurrentTerm, rf.NextIndex, rf.MatchIndex, rf.CommitIndex)
 	rf.mu.Unlock()
 }
+func (rf *Raft) UpdateApplied() {
+	for rf.LastApplied < rf.CommitIndex {
+		if rf.LastApplied >= rf.LastIncludedIndex {
+			msg := ApplyMsg{CommandValid: true, Command: rf.GetLogIndex(rf.LastApplied + 1).Command, CommandIndex: rf.LastApplied + 1}
+			rf.mu.Unlock()
+			rf.applych <- msg
+			DPrintf("[%d] apply msg %d success", rf.me, rf.LastApplied+1)
+			rf.mu.Lock()
+		}
+		rf.LastApplied++
+	}
+}
 func (rf *Raft) ticker() {
 	me := rf.me
 	//peersNum := len(rf.peers)
@@ -718,16 +729,7 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		rf.mu.Lock()
-		for rf.LastApplied < rf.CommitIndex {
-			if rf.LastApplied >= rf.LastIncludedIndex {
-				msg := ApplyMsg{CommandValid: true, Command: rf.GetLogIndex(rf.LastApplied + 1).Command, CommandIndex: rf.LastApplied + 1}
-				rf.mu.Unlock()
-				rf.applych <- msg
-				DPrintf("[%d] apply msg %d success", rf.me, rf.LastApplied+1)
-				rf.mu.Lock()
-			}
-			rf.LastApplied++
-		}
+		rf.UpdateApplied()
 		State := rf.State
 		if State == LEADER {
 			rf.mu.Unlock()
@@ -748,7 +750,6 @@ func (rf *Raft) ticker() {
 			time.Sleep(time.Duration(rf.BroadcastTime) * time.Millisecond)
 		} else if State == CANDIDATE {
 			rf.DoElection()
-			time.Sleep(time.Duration(rf.BroadcastTime) * time.Millisecond)
 		}
 	}
 }
@@ -772,6 +773,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.applych = applyCh
+	rf.cond = sync.NewCond(&rf.mu)
 	DPrintf("[%d] is Making , len(peers) = %d\n", me, len(peers))
 	// Your initialization code here (2A, 2B, 2C).
 	rf.BroadcastTime = BROADCASTTIME
