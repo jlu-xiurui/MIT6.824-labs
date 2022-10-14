@@ -475,7 +475,6 @@ func (rf *Raft) killed() bool {
 }
 func (rf *Raft) DoElection() {
 	rf.CurrentTerm++
-	finished := 1
 	voteGranted := 1
 	rf.VotedFor = rf.me
 	rf.persist()
@@ -498,7 +497,6 @@ func (rf *Raft) DoElection() {
 				}
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				finished++
 				if reply.VoteGranted {
 					voteGranted++
 				}
@@ -540,10 +538,6 @@ func (rf *Raft) DoElection() {
 			rf.TrySendEntries(true)
 			break
 		}
-		//if finished == len(rf.peers) {
-		//rf.mu.Unlock()
-		//break
-		//}
 		rf.mu.Unlock()
 	}
 	DPrintf("[%d] Do election finished", rf.me)
@@ -582,6 +576,7 @@ func (rf *Raft) SendSnapshot(server int) {
 }
 func (rf *Raft) SendHeartBeat(server int) {
 	rf.mu.Lock()
+	DPrintf("[%d] send heartBeat to server %d\n", rf.me, server)
 	if rf.State != LEADER {
 		rf.mu.Unlock()
 		return
@@ -593,7 +588,6 @@ func (rf *Raft) SendHeartBeat(server int) {
 	rf.mu.Unlock()
 	args := AppendEntriesArgs{Term: term, LeaderId: rf.me, LeaderCommit: leaderCommit, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
 	reply := AppendEntriesReply{}
-	DPrintf("[%d] send heartBeat to server %d\n", rf.me, server)
 	rf.sendAppendEntries(server, &args, &reply)
 	rf.mu.Lock()
 	if reply.Term > rf.CurrentTerm {
@@ -646,7 +640,7 @@ func (rf *Raft) SendEntries(server int) {
 				rf.NextIndex[server] = reply.LastIncludedIndex + 1
 			}
 			if reply.XLen < prevLogIndex {
-				rf.NextIndex[server] = reply.XLen
+				rf.NextIndex[server] = Max(reply.XLen, 1)
 			} else {
 				newNextIndex := prevLogIndex
 				for newNextIndex > rf.LastIncludedIndex && rf.GetLogIndex(newNextIndex).Term > reply.XTerm {
@@ -658,6 +652,7 @@ func (rf *Raft) SendEntries(server int) {
 					rf.NextIndex[server] = reply.XIndex
 				}
 			}
+			DPrintf("[%d] rf.NextIndex[%d] update to %d", rf.me, server, rf.NextIndex[server])
 			done = false
 		} else {
 			rf.NextIndex[server] = prevLogIndex + len(entries) + 1
