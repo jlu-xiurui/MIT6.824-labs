@@ -623,7 +623,7 @@ func (rf *Raft) SendEntries(server int) {
 3. 如接受方的term数大于领导者的term数，则更新term数、转换为跟随者并重置超时时间；
 4. 如接收方**一致性检查失败**，则减少当前的`NextIndex`，在这里采取了实验指导书中的优化方式：
 
-![Lab2_6](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab2_5.png)
+![Lab2_6](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab2_6.png)
 
 ​	接受方填充了`XTerm` - 接收方冲突条目的term数、`XIndex` - 接收方term数为`XTerm`的条目中的最低索引、`XLen` - 接收方日志长度（实际上为接收方最后一个日志条目的index）。当`XLen`小于`prevLogIndex`，符合上图中的Case3，在这里将`NextIndex`置为max（XLen，1），以防止该值等于0（使得下次循环中`prevLogIndex`为-1）；对于其他Case，按照上图完成即可，同样需要注意防止`NextIndex`等于0。
 
