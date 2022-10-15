@@ -87,6 +87,7 @@ Raft使用心跳机制来触发**领导者**选取，当服务器加入Raft集�
 ### 日志压缩
 
 为了阻止日志的无限制增长，必须在日志条目达到一定数量时对日志进行压缩：
+
 ![Lab2_5](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab2_5.png)	
 
 在Raft中，使用快照功能实现日志压缩。在服务器运行过程中（不仅限于领导者），会定期检查当前日志的长度，如果达到了一定阈值，则会将以应用到该服务器状态机的日志对状态机的影响压缩成快照（snapshot）的形式存放在服务器中，同时删除日志中所有以应用到状态机的日志条目。如上图所示，x<-3、y<-1、y<-9、x<-2、x<-0的日志条目可以被压缩为<x<-0、y<-9>的快照。
@@ -622,7 +623,7 @@ func (rf *Raft) SendEntries(server int) {
 3. 如接受方的term数大于领导者的term数，则更新term数、转换为跟随者并重置超时时间；
 4. 如接收方**一致性检查失败**，则减少当前的`NextIndex`，在这里采取了实验指导书中的优化方式：
 
-![Lab2_6](C:\Users\xiurui\Desktop\计算机书单\6.824\figures\Lab2_6.png)
+![Lab2_6](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/noteFigures/Lab2_5.png)
 
 ​	接受方填充了`XTerm` - 接收方冲突条目的term数、`XIndex` - 接收方term数为`XTerm`的条目中的最低索引、`XLen` - 接收方日志长度（实际上为接收方最后一个日志条目的index）。当`XLen`小于`prevLogIndex`，符合上图中的Case3，在这里将`NextIndex`置为max（XLen，1），以防止该值等于0（使得下次循环中`prevLogIndex`为-1）；对于其他Case，按照上图完成即可，同样需要注意防止`NextIndex`等于0。
 
