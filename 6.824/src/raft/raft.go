@@ -234,12 +234,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term              int
-	Success           bool
-	XTerm             int
-	XIndex            int
-	XLen              int
-	LastIncludedIndex int
+	Term    int
+	Success bool
+	XTerm   int
+	XIndex  int
+	XLen    int
 }
 
 type InstallSnapshotArgs struct {
@@ -291,10 +290,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%d %d] get AppendEntries from %d, LastIncludeIndex = %d,logs = %v,currterm = %d(PrevLogIndex:%d,PrevLogTerm:%d,Leaderterm:%d)\n",
 		rf.me, rf.State, args.LeaderId, rf.LastIncludedIndex, rf.Log, rf.CurrentTerm, args.PrevLogIndex, args.PrevLogTerm, args.Term)
 	reply.Term = rf.CurrentTerm
-	reply.LastIncludedIndex = rf.LastIncludedIndex
 	reply.Success = true
 	rf.ElectionTimeout = GetElectionTimeout()
-	if args.Term < rf.CurrentTerm || reply.LastIncludedIndex > args.PrevLogIndex {
+	if args.Term < rf.CurrentTerm || rf.LastIncludedIndex > args.PrevLogIndex {
 		reply.Success = false
 		return
 	}
@@ -351,9 +349,16 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.cond.Broadcast()
 		rf.persist()
 	}
-	newSnapshot := make([]byte, len(args.Snapshot))
-	copy(newSnapshot, args.Snapshot)
-	rf.persister.snapshot = newSnapshot
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	encoder.Encode(rf.CurrentTerm)
+	encoder.Encode(rf.VotedFor)
+	encoder.Encode(rf.Log)
+	encoder.Encode(rf.LastIncludedIndex)
+	encoder.Encode(rf.LastIncludedTerm)
+	data := writer.Bytes()
+	rf.persister.SaveStateAndSnapshot(data, args.Snapshot)
+
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
 	LastEntry := rf.GetLastEntry()
@@ -493,6 +498,7 @@ func (rf *Raft) DoElection() {
 				reply := RequestVoteReply{}
 				DPrintf("[%d] send RequestVote to server %d\n", rf.me, server)
 				if !rf.sendRequestVote(server, &args, &reply) {
+					rf.cond.Broadcast()
 					return
 				}
 				rf.mu.Lock()
@@ -636,9 +642,9 @@ func (rf *Raft) SendEntries(server int) {
 			return
 		}
 		if !reply.Success {
-			if reply.LastIncludedIndex > prevLogIndex {
-				rf.NextIndex[server] = reply.LastIncludedIndex + 1
-			}
+			//if reply.LastIncludedIndex > prevLogIndex {
+			//	rf.NextIndex[server] = reply.LastIncludedIndex + 1
+			//}
 			if reply.XLen < prevLogIndex {
 				rf.NextIndex[server] = Max(reply.XLen, 1)
 			} else {
