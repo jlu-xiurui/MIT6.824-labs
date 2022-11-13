@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"6.824/labgob"
-	"6.824/labrpc"
-	"6.824/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
 const Debug = false
@@ -18,11 +20,19 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const GET = 0
+const PUT = 1
+const APPEND = 2
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Type        int // 0 - Get, 1 - Put, 2 - Append
+	Key         string
+	Val         string
+	ClientId    int64
+	SequenceNum int64
 }
 
 type KVServer struct {
@@ -35,15 +45,92 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	data      map[string]string
+	clientSeq map[int64]int64
 }
 
-
+func (kv *KVServer) DoOperation(op Op) {
+	kv.mu.Lock()
+	if kv.clientSeq[op.ClientId] >= op.SequenceNum {
+		kv.mu.Unlock()
+		return
+	}
+	kv.clientSeq[op.ClientId] = op.SequenceNum
+	if op.Type == PUT {
+		kv.data[op.Key] = op.Val
+	} else if op.Type == APPEND {
+		ret := kv.data[op.Key]
+		kv.data[op.Key] = ret + op.Val
+	}
+	kv.mu.Unlock()
+}
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	if kv.killed() {
+		reply.Err = "[server] Server is killed"
+		return
+	}
+	_, _, isleader := kv.rf.Start(Op{Type: GET, Key: args.Key, ClientId: args.ClientId, SequenceNum: args.SequenceNum})
+	if !isleader {
+		reply.Err = "[server] Server is not leader"
+		return
+	}
+	DPrintf("[server %d] Get : clientId : %d,seq : %d,key : %s", kv.me, args.ClientId, args.SequenceNum, args.Key)
+	var timeout int32 = 0
+	go func() {
+		time.Sleep(1000 * time.Millisecond)
+		atomic.StoreInt32(&timeout, 1)
+	}()
+	for {
+		if atomic.LoadInt32(&timeout) != 0 {
+			reply.Err = "Timeout"
+			return
+		}
+		kv.mu.Lock()
+		if kv.clientSeq[args.ClientId] >= args.SequenceNum {
+			reply.Value = kv.data[args.Key]
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	if kv.killed() {
+		reply.Err = "Server is killed"
+		return
+	}
+	var opType int
+	if args.Op == "Put" {
+		opType = PUT
+	} else if args.Op == "Append" {
+		opType = APPEND
+	}
+	_, _, isleader := kv.rf.Start(Op{Type: opType, Key: args.Key, Val: args.Value, ClientId: args.ClientId, SequenceNum: args.SequenceNum})
+	if !isleader {
+		reply.Err = "Server is not leader"
+		return
+	}
+	DPrintf("[server %d] PutAppend : clientId : %d,seq : %d,key : %s, val : %s, Op : %s", kv.me, args.ClientId, args.SequenceNum, args.Key, args.Value, args.Op)
+	var timeout int32 = 0
+	go func() {
+		time.Sleep(1000 * time.Millisecond)
+		atomic.StoreInt32(&timeout, 1)
+	}()
+	for {
+		if atomic.LoadInt32(&timeout) != 0 {
+			reply.Err = "Timeout"
+			return
+		}
+		kv.mu.Lock()
+		if kv.clientSeq[args.ClientId] >= args.SequenceNum {
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+	}
 }
 
 //
@@ -81,6 +168,15 @@ func (kv *KVServer) killed() bool {
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+
+func (kv *KVServer) receiveMsg() {
+	for msg := range kv.applyCh {
+		op := msg.Command.(Op)
+		DPrintf("[server %d],msg receive %v", kv.me, op)
+		kv.DoOperation(op)
+	}
+
+}
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -91,11 +187,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-
+	kv.data = map[string]string{}
+	kv.clientSeq = map[int64]int64{}
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	go kv.receiveMsg()
 	return kv
 }
