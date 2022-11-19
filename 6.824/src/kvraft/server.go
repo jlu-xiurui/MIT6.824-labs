@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -45,14 +46,13 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	data      map[string]string
-	clientSeq map[int64]int64
+	data       map[string]string
+	clientSeq  map[int64]int64
+	applyIndex int
 }
 
 func (kv *KVServer) DoOperation(op Op) {
-	kv.mu.Lock()
 	if kv.clientSeq[op.ClientId] >= op.SequenceNum {
-		kv.mu.Unlock()
 		return
 	}
 	kv.clientSeq[op.ClientId] = op.SequenceNum
@@ -62,7 +62,6 @@ func (kv *KVServer) DoOperation(op Op) {
 		ret := kv.data[op.Key]
 		kv.data[op.Key] = ret + op.Val
 	}
-	kv.mu.Unlock()
 }
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
@@ -171,9 +170,49 @@ func (kv *KVServer) killed() bool {
 
 func (kv *KVServer) receiveMsg() {
 	for msg := range kv.applyCh {
-		op := msg.Command.(Op)
-		DPrintf("[server %d],msg receive %v", kv.me, op)
-		kv.DoOperation(op)
+		if kv.killed() {
+			return
+		}
+		DPrintf("[server %d],msg receive %v,raftstatesize = %d", kv.me, msg, kv.rf.RaftStateSize())
+		if msg.CommandValid {
+			op := msg.Command.(Op)
+			kv.mu.Lock()
+			kv.DoOperation(op)
+			kv.applyIndex = msg.CommandIndex
+			kv.mu.Unlock()
+		} else if msg.SnapshotValid {
+			var data map[string]string
+			var clientSeq map[int64]int64
+			reader := bytes.NewBuffer(msg.Snapshot)
+			decoder := labgob.NewDecoder(reader)
+			if decoder.Decode(&data) == nil &&
+				decoder.Decode(&clientSeq) == nil {
+				kv.mu.Lock()
+				kv.data = data
+				kv.clientSeq = clientSeq
+				kv.applyIndex = msg.SnapshotIndex
+				kv.mu.Unlock()
+			}
+		}
+	}
+
+}
+
+func (kv *KVServer) trysnapshot() {
+	for !kv.killed() {
+		if kv.maxraftstate > 0 && kv.rf.RaftStateSize() > kv.maxraftstate*8/10 {
+			kv.mu.Lock()
+			writer := new(bytes.Buffer)
+			encoder := labgob.NewEncoder(writer)
+			encoder.Encode(kv.data)
+			encoder.Encode(kv.clientSeq)
+			encoder.Encode(kv.applyIndex)
+			applyindex := kv.applyIndex
+			kv.mu.Unlock()
+			snapshot := writer.Bytes()
+			kv.rf.Snapshot(applyindex, snapshot)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 }
@@ -193,6 +232,22 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	var data map[string]string
+	var clientSeq map[int64]int64
+	var applyIndex int
+	snapshot := persister.ReadSnapshot()
+	reader := bytes.NewBuffer(snapshot)
+	decoder := labgob.NewDecoder(reader)
+	if decoder.Decode(&data) == nil &&
+		decoder.Decode(&clientSeq) == nil &&
+		decoder.Decode(&applyIndex) == nil {
+		kv.mu.Lock()
+		kv.data = data
+		kv.clientSeq = clientSeq
+		kv.applyIndex = applyIndex
+		kv.mu.Unlock()
+	}
 	go kv.receiveMsg()
+	go kv.trysnapshot()
 	return kv
 }
