@@ -208,9 +208,9 @@ func (kv *KVServer) trysnapshot() {
 			encoder.Encode(kv.clientSeq)
 			encoder.Encode(kv.applyIndex)
 			applyindex := kv.applyIndex
-			kv.mu.Unlock()
 			snapshot := writer.Bytes()
 			kv.rf.Snapshot(applyindex, snapshot)
+			kv.mu.Unlock()
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

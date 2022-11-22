@@ -591,6 +591,9 @@ func (rf *Raft) SendEntries(server int) {
 			return
 		}
 		if !reply.Success {
+			//if reply.LastIncludedIndex > prevLogIndex {
+			//	rf.NextIndex[server] = reply.LastIncludedIndex + 1
+			//}
 			if reply.XLen < prevLogIndex {
 				rf.NextIndex[server] = Max(reply.XLen, 1)
 			} else {
@@ -604,11 +607,11 @@ func (rf *Raft) SendEntries(server int) {
 					rf.NextIndex[server] = reply.XIndex
 				}
 			}
-			DPrintf("[%d] rf.NextIndex[%d] update to %d", rf.me, server, rf.NextIndex[server])
+			DPrintf("[%d] sendentires rf.NextIndex[%d] update to %d", rf.me, server, rf.NextIndex[server])
 			done = false
 		} else {
-			rf.NextIndex[server] = prevLogIndex + len(entries) + 1
-			rf.MatchIndex[server] = prevLogIndex + len(entries)
+			rf.NextIndex[server] = Max(rf.NextIndex[server], prevLogIndex+len(entries)+1)
+			rf.MatchIndex[server] = Max(rf.MatchIndex[server], prevLogIndex+len(entries))
 			DPrintf("[%d] AppendEntries success,NextIndex is %v,MatchIndex is %v", rf.me, rf.NextIndex, rf.MatchIndex)
 		}
 		rf.mu.Unlock()
@@ -627,7 +630,7 @@ func (rf *Raft) SendEntries(server int) {
 
 ​	接受方填充了`XTerm` - 接收方冲突条目的term数、`XIndex` - 接收方term数为`XTerm`的条目中的最低索引、`XLen` - 接收方日志长度（实际上为接收方最后一个日志条目的index）。当`XLen`小于`prevLogIndex`，符合上图中的Case3，在这里将`NextIndex`置为max（XLen，1），以防止该值等于0（使得下次循环中`prevLogIndex`为-1）；对于其他Case，按照上图完成即可，同样需要注意防止`NextIndex`等于0。
 
-5.如接收方通过了本次`AppendEntries`，则直接返回即可。
+5.如接收方通过了本次`AppendEntries`，则更新`NextIndex`及`MatchIndex`。在这里，考虑到发送方**连续发送包含不同长度日志**的`AppendEntries`，且短日志长度更晚到达的情况，利用`Max`使得`NextIndex`及`MatchIndex`仅能向上增长，并在这种情况下使得接收方忽略短日志（见下文）。
 
 ```go
 type AppendEntriesArgs struct {
@@ -655,8 +658,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%d %d] get AppendEntries from %d, LastIncludeIndex = %d,logs = %v,currterm = %d(PrevLogIndex:%d,PrevLogTerm:%d,Leaderterm:%d)\n",
-		rf.me, rf.State, args.LeaderId, rf.LastIncludedIndex, rf.Log, rf.CurrentTerm, args.PrevLogIndex, args.PrevLogTerm, args.Term)
+	DPrintf("[%d %d] get AppendEntries from %d, LastIncludeIndex = %d,currterm = %d(PrevLogIndex:%d,PrevLogTerm:%d,Leaderterm:%d)\n",
+		rf.me, rf.State, args.LeaderId, rf.LastIncludedIndex, rf.CurrentTerm, args.PrevLogIndex, args.PrevLogTerm, args.Term)
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
 	rf.ElectionTimeout = GetElectionTimeout()
@@ -685,17 +688,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	if len(args.Entries) != 0 {
-		var log []LogEntry
-		for i := rf.LastIncludedIndex + 1; i <= args.PrevLogIndex; i++ {
-			log = append(log, rf.GetLogIndex(i))
+	for index, entry := range args.Entries {
+		if rf.GetLastEntry().Index < entry.Index || entry.Term != rf.GetLogIndex(entry.Index).Term {
+			var log []LogEntry
+			for i := rf.LastIncludedIndex + 1; i <= entry.Index-1; i++ {
+				log = append(log, rf.GetLogIndex(i))
+			}
+			log = append(log, args.Entries[index:]...)
+			rf.Log = log
+			rf.persist()
+			DPrintf("[%d %d] Append new log %v", rf.me, rf.State, rf.Log)
 		}
-		for i := range args.Entries {
-			log = append(log, args.Entries[i])
-		}
-		rf.Log = log
-		rf.persist()
-		DPrintf("[%d %d] Append new log", rf.me, rf.State)
 	}
 	if args.LeaderCommit > rf.CommitIndex {
 		rf.CommitIndex = Min(args.LeaderCommit, rf.GetLastEntry().Index)
@@ -710,7 +713,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 2. 若发送方的term小于接收方的term，或发送方的`prevLogIndex`处的日志条目已经被接收方在日志压缩中删除，则返回`reply.success`为假。注意，在后者情况下，`XLen`被默认初始化为0，因此发送方的`NextIndex`将被设定为Max(0,1)即1，将在`SendEntries` 中返回，并在下次`TrySendEntries`中发送快照。
 3. 若接收方的term小于发送方的term，或接收方为候选者，则转化为跟随者，并调用`rf.cond.Broadcast()`唤醒选举函数`DoElection`主线程。
 4. 若接收方**一致性检查失败**，则填充`XTerm`、`XIndex`、`XLen`并返回`reply.success`为假。
-5. 若一致性检查通过，则在RPC参数中日志条目不为0的情况下更改本地日志，即删除本地`prevLogIndex`以后的所有日志条目，并把`arg.Entries`中的所有条目附加在本地日志。
+5. 若一致性检查通过，则将发送方的日志与本地日志合并。当发送方日志为本地日志的子集时，则不对本地日志进行更改；当发送方日志与本地日志有不重合之处时，则将本地日志置为发送方日志。上述规则考虑了发送方**连续发送包含不同长度日志**的`AppendEntries`，且短日志长度更晚到达的情况。在这种情况下，如直接将本地日志置为发送方日志，则会使本地日志回退，而在Raft算法的假设中日志是只能增长的。
 6. 尝试更新本地`CommitIndex`。
 
 ```go
@@ -721,6 +724,10 @@ func (rf *Raft) SendHeartBeat(server int) {
 		rf.mu.Unlock()
 		return
 	}
+	if rf.NextIndex[server] <= rf.LastIncludedIndex {
+		rf.mu.Unlock()
+		return
+	}
 	term := rf.CurrentTerm
 	leaderCommit := rf.CommitIndex
 	prevLogIndex := rf.NextIndex[server] - 1
@@ -728,7 +735,9 @@ func (rf *Raft) SendHeartBeat(server int) {
 	rf.mu.Unlock()
 	args := AppendEntriesArgs{Term: term, LeaderId: rf.me, LeaderCommit: leaderCommit, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
 	reply := AppendEntriesReply{}
-	rf.sendAppendEntries(server, &args, &reply)
+	if !rf.sendAppendEntries(server, &args, &reply) {
+		return
+	}
 	rf.mu.Lock()
 	if reply.Term > rf.CurrentTerm {
 		rf.CurrentTerm = reply.Term
@@ -736,12 +745,30 @@ func (rf *Raft) SendHeartBeat(server int) {
 		rf.ElectionTimeout = GetElectionTimeout()
 		rf.VotedFor = -1
 		rf.persist()
+		rf.mu.Unlock()
+		return
+	}
+	if !reply.Success {
+		if reply.XLen < prevLogIndex {
+			rf.NextIndex[server] = Max(reply.XLen, 1)
+		} else {
+			newNextIndex := prevLogIndex
+			for newNextIndex > rf.LastIncludedIndex && rf.GetLogIndex(newNextIndex).Term > reply.XTerm {
+				newNextIndex--
+			}
+			if rf.GetLogIndex(newNextIndex).Term == reply.XTerm {
+				rf.NextIndex[server] = Max(newNextIndex, rf.LastIncludedIndex+1)
+			} else {
+				rf.NextIndex[server] = reply.XIndex
+			}
+		}
+		DPrintf("[%d] sendheartbeat rf.NextIndex[%d] update to %d", rf.me, server, rf.NextIndex[server])
 	}
 	rf.mu.Unlock()
 }
 ```
 
-`SendHeartBeat`执行心跳RPC的发送，在函数中填充`AppendEntries`中除`Entries`外的所有元素，并发送`AppendEntries`请求。后续的处理仅为检查接受方的term是否大于本地term，并在上述情况发生时转化为跟随者并重置选举超时时间。
+`SendHeartBeat`执行心跳RPC的发送，在函数中填充`AppendEntries`中除`Entries`外的所有元素，并发送`AppendEntries`请求。除不用等待`reply.success`以及不在RPC请求中填充日志以外，该函数的处理方式与`SendHeartBeat`大体相似。
 
 ### 日志压缩
 

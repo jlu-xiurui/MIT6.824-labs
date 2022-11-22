@@ -337,19 +337,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("[%d %d] Append new log %v", rf.me, rf.State, rf.Log)
 		}
 	}
-	/*
-		if len(args.Entries) != 0 {
-			var log []LogEntry
-			for i := rf.LastIncludedIndex + 1; i <= args.PrevLogIndex; i++ {
-				log = append(log, rf.GetLogIndex(i))
-			}
-			for i := range args.Entries {
-				log = append(log, args.Entries[i])
-			}
-			rf.Log = log
-			rf.persist()
-			DPrintf("[%d %d] Append new log %v", rf.me, rf.State, rf.Log)
-		}*/
 	if args.LeaderCommit > rf.CommitIndex {
 		rf.CommitIndex = Min(args.LeaderCommit, rf.GetLastEntry().Index)
 		DPrintf("[%d %d] CommitIndex update to %d\n", rf.me, rf.State, rf.CommitIndex)
@@ -642,9 +629,6 @@ func (rf *Raft) SendHeartBeat(server int) {
 		return
 	}
 	if !reply.Success {
-		//if reply.LastIncludedIndex > prevLogIndex {
-		//	rf.NextIndex[server] = reply.LastIncludedIndex + 1
-		//}
 		if reply.XLen < prevLogIndex {
 			rf.NextIndex[server] = Max(reply.XLen, 1)
 		} else {
