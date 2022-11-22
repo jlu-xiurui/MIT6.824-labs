@@ -212,7 +212,7 @@ func (kv *KVServer) trysnapshot() {
 			kv.rf.Snapshot(applyindex, snapshot)
 			kv.mu.Unlock()
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 
 }
