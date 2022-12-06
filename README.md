@@ -18,7 +18,7 @@ MIT6.824相关实验的源码及解答笔记，在本课程中可以阅读若干
 
 在本实验中，需要实现一个分布式的KV存储库。在这里，分布式为KV存储库提供了容错的能力，即只要分布式集群中大多数KV存储库服务器可以工作，集群就可以为客户端提供KV存储库服务。其中，分布式KV存储库使用Raft库，使得客户端的操作将以日志的形式在服务器间进行复制，以保证系统的强一致性。本实验中，客户端所连续发送的操作需要在平均三分之一Raft心跳间隔内被提交，这使得需要对Lab2中的Raft实现进行更改。
 
-### Lab 4 :  Sharded Key/Value Service [note4]https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/notes/MIT6.824%20Lab4..md)
+### Lab 4 :  Sharded Key/Value Service [note4](https://github.com/jlu-xiurui/MIT6.824-labs/blob/master/notes/MIT6.824%20Lab4..md)
 
 在本实验中，需要实现分片KV存储系统，其中系统的键将被映射至对应的分片中，各分片将被均匀的分配到若干副本组中进行服务，即每个副本组仅需处理其对应的分片的操作，这使得不同组之间可并行操作，以提升系统的性能。
 
