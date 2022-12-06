@@ -540,7 +540,7 @@ Client2:             |---------RX1--------|
 
 注意到，上述情况仍满足线性一致性，因此对于`Get`无需使用分组控制器中的缓存方法缓存在`Get`命令被提交时的返回结果。
 
-![lab4_figure1](..\noteFigures\lab4_figure1.jpg)
+![lab4_figure1](../noteFigures/lab4_figure1.jpg)
 
 在本实验中，所设计的分片转移机制如上图所示，其流程如下：
 
