@@ -9,9 +9,9 @@ import (
 // Debugging
 const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
+func (rf *Raft) DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug && rf.name[0] == 'K' {
+		log.Printf(rf.name+" "+format, a...)
 	}
 	return
 }

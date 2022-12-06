@@ -229,7 +229,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.data = map[string]string{}
 	kv.clientSeq = map[int64]int64{}
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh, "")
 
 	// You may need initialization code here.
 	var data map[string]string

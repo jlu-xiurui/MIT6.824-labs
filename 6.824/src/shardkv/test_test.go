@@ -1,15 +1,18 @@
 package shardkv
 
-import "6.824/porcupine"
-import "6.824/models"
-import "testing"
-import "strconv"
-import "time"
-import "fmt"
-import "sync/atomic"
-import "sync"
-import "math/rand"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.824/models"
+	"6.824/porcupine"
+)
 
 const linearizabilityCheckTimeout = 1 * time.Second
 
@@ -792,11 +795,15 @@ func TestChallenge1Delete(t *testing.T) {
 	}
 
 	total := 0
+	totraft := 0
+	totsnap := 0
 	for gi := 0; gi < cfg.ngroups; gi++ {
 		for i := 0; i < cfg.n; i++ {
 			raft := cfg.groups[gi].saved[i].RaftStateSize()
 			snap := len(cfg.groups[gi].saved[i].ReadSnapshot())
 			total += raft + snap
+			totraft += raft
+			totsnap += snap
 		}
 	}
 
@@ -806,7 +813,7 @@ func TestChallenge1Delete(t *testing.T) {
 	// plus slop.
 	expected := 3 * (((n - 3) * 1000) + 2*3*1000 + 6000)
 	if total > expected {
-		t.Fatalf("snapshot + persisted Raft state are too big: %v > %v\n", total, expected)
+		t.Fatalf("snapshot + persisted Raft state are too big: %v > %v,raft = %v,snap = %v", total, expected, totraft, totsnap)
 	}
 
 	for i := 0; i < n; i++ {
